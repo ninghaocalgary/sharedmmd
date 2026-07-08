@@ -1,0 +1,50 @@
+sequenceDiagram
+    autonumber
+    participant U as User
+    participant H as Haiku Classifier
+    participant LM as LangMem Store
+    participant S as Sonnet ReAct
+    participant MCP as OpenSearch MCP
+    participant MW as Post-Tool Middleware
+    participant PG as PostgreSQL
+    participant MC as Memory Consolidator
+
+    U->>H: raw query
+    H->>H: classify query<br/>(entity1, entity2,<br/>entity3, entity4)
+    Note over H: entity2: index1 for property searches<br/>index2 only for location-specific address queries<br/>entity4: bool_filter for city/attr filters<br/>geo_distance only for lat/lon radius queries
+    H-->>S: QueryNamespace(entity1, entity2, entity3, entity4)
+
+    S->>LM: retrieve_memories<br/>namespace=<masked><br/>semantic search, limit=top_k×3
+    LM->>LM: post-filter: drop items below weight threshold<br/>return top_k survivors (semantic order preserved)
+    LM-->>S: past trajectories above weight threshold<br/>(failures already excluded)
+
+    Note over S: memory_rules: high rl_weight → copy DSL as starting point<br/>low rl_weight → use as hint only, do not copy verbatim
+
+    loop ReAct turns
+        S->>MCP: tool1 / tool2<br/>tool3 / tool4
+        MCP-->>MW: raw OpenSearch response
+        MW-->>S: stripped + truncated result
+        S->>S: reason over result<br/>update plan
+    end
+
+    S-->>U: final response
+
+    Note over U,MC: outcome capture phase
+
+    U->>PG: POST /outcome<br/>(success/failure/partial/<br/>outcome_type1/outcome_type2)
+
+    PG->>MC: trigger consolidation
+
+    MC->>PG: read full trajectory from checkpoint store
+    MC->>MC: extract per-turn thoughts, tool_calls,<br/>middleware summaries, final answer
+
+    MC->>LM: write memory entries under full prefix<br/>namespace=<masked><br/>keys: key1, key2, key3, key4
+    MC->>PG: upsert score_table(prefix)<br/>weight += delta, attempts++, successes++
+    MC->>PG: append events_table<br/>(prefix, col1, col2, col3, col4)
+
+    alt weight ≥ <threshold> AND attempts ≥ <threshold> AND success_rate ≥ <threshold>
+        MC->>PG: write to promotion_queue
+        Note over MC,PG: human reviews and<br/>promotes DSL pattern to rule store
+    end
+
+    Note over LM,PG: memory available for next query<br/>entries above weight threshold surface to agent<br/>entries below weight threshold stored but filtered at retrieval

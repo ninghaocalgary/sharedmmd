@@ -1,0 +1,121 @@
+flowchart TD
+
+%% Safe Agent - main diagram (mirrors ReActHook.mmd structure)
+%% Amber nodes = our middleware implementations. See linked .mmd files for detail.
+
+    A([Session Open]) --> H_CS
+
+    subgraph MEMORY_GROUP ["Memory"]
+        direction TB
+        STORE[(store  see Memory.mmd)]
+        STORE_VEC[(store_vec  see Memory.mmd)]
+        CLEANROOM_MEM[(cleanroom  see Cleanroom.mmd)]
+        STORE ~~~ STORE_VEC ~~~ CLEANROOM_MEM
+    end
+
+    STORE -. "session history" .-> H_CS
+    STORE_VEC -. "intent patterns" .-> H_CS
+    CLEANROOM_MEM -. "ensemble wisdom" .-> H_CS
+    STORE_VEC -. "context inject before_model" .-> SEED
+    STORE_VEC -. "asearch" .-> H_RS
+    H_AF -. "write store_raw" .-> STORE
+    H_AF -. "write store_vec" .-> STORE_VEC
+    H_CE -. "GCT nomination" .-> CLEANROOM_MEM
+
+    subgraph AGENT_CHAIN ["Agent Chain"]
+        H_CS(["GCI · session_init  see GCI.mmd"])
+        H_CS --> SEED["PromptComposer  see PromptComposer.mmd"]
+
+        SEED --> H_CMS
+
+        subgraph LLM_LOOP ["LLM Reasoning Loop"]
+            H_CMS(["EntryScopeGuard · Routing  pre_model_hook  see EntryScopeGuard.mmd"])
+            H_CMS --> H_PG
+            H_PG(["HITLPlanMiddleware · before_model  see HITLMiddleware.mmd"])
+            H_PG --> LLM{claude-sonnet-4-6  adaptive thinking}
+
+            LLM -->|stream chunk| H_TOK(["AG-UI  on_llm_new_token"])
+            H_TOK --> LLM
+
+            LLM --> H_LE(["OutputGuard · after_model  see OutputGuard.mmd"])
+            LLM --> H_LERR(["LLM error"])
+
+            H_LE --> H_TXT(["reasoning output  thinking blocks"])
+            H_TXT --> DECIDE{tool_use block?}
+        end
+
+        subgraph TOOL_EXEC ["Tool Execution"]
+            H_AA(["HopSanitizer · pre_tool_hook  see HopSanitizer.mmd"])
+            H_HITL(["HITLMiddleware · awrap_tool_call  see HITLMiddleware.mmd"])
+            H_TS(["MCPTool.ainvoke"])
+            TOOL[MCPTool._arun  graphy-query-mcp to Neo4j]
+            H_TE(["ReScopeGuard · post_tool_hook  see ReScopeGuard.mmd"])
+            H_TERR(["tool error"])
+
+            H_AA --> H_HITL
+            H_HITL --> H_TS
+            H_TS --> TOOL
+
+            subgraph RETRIEVER ["Memory Retriever  if tool uses RAG"]
+                H_RS(["store_vec.asearch  see MemRetriever.mmd"])
+                RETRIEVE[Bedrock Titan embed + HNSW cosine search]
+                H_RE(["context retrieved"])
+                H_RERR(["retriever error"])
+                H_RS --> RETRIEVE --> H_RE
+                RETRIEVE --> H_RERR
+            end
+
+            TOOL --> H_RS
+            H_RE --> H_TE
+            H_RERR --> H_TERR
+        end
+
+        DECIDE -->|Yes| H_AA
+        H_TE --> HISTORY[LangGraph state update  Postgres checkpoint write]
+        H_TERR --> HISTORY
+        HISTORY --> H_CMS
+
+        DECIDE -->|No - Final Answer| H_AF
+        H_AF(["MemMiddleware · after_model  see MemMiddleware.mmd"])
+        H_AF --> H_CE(["GCT · session_close  see GCT.mmd"])
+        H_LERR --> H_CERR(["chain error"])
+    end
+
+    H_CE --> OUT([Response to User])
+    H_CERR --> OUT
+
+    %% Middleware nodes — amber
+    style H_CS   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_CMS  fill:#F5A623,color:#000,stroke:#c47d00
+    style H_PG   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_TOK  fill:#F5A623,color:#000,stroke:#c47d00
+    style H_LE   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_LERR fill:#E74C3C,color:#fff,stroke:#a93226
+    style H_TXT  fill:#F5A623,color:#000,stroke:#c47d00
+    style H_AA   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_HITL fill:#F5A623,color:#000,stroke:#c47d00
+    style H_TS   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_TE   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_TERR fill:#E74C3C,color:#fff,stroke:#a93226
+    style H_RS   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_RE   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_RERR fill:#E74C3C,color:#fff,stroke:#a93226
+    style H_AF   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_CE   fill:#F5A623,color:#000,stroke:#c47d00
+    style H_CERR fill:#E74C3C,color:#fff,stroke:#a93226
+
+    %% Process nodes
+    style A       fill:#4A90D9,color:#fff,stroke:#2c6fad
+    style OUT     fill:#4A90D9,color:#fff,stroke:#2c6fad
+    style SEED    fill:#2E86AB,color:#fff,stroke:#1a5f7a
+    style LLM     fill:#8E44AD,color:#fff,stroke:#6c3483
+    style DECIDE  fill:#8E44AD,color:#fff,stroke:#6c3483
+    style TOOL    fill:#27AE60,color:#fff,stroke:#1e8449
+    style RETRIEVE fill:#27AE60,color:#fff,stroke:#1e8449
+    style HISTORY fill:#2E86AB,color:#fff,stroke:#1a5f7a
+
+    %% Memory stores
+    style STORE         fill:#1e1b4b,stroke:#6366f1,color:#c7d2fe
+    style STORE_VEC     fill:#1e1b4b,stroke:#818cf8,color:#e0e7ff
+    style CLEANROOM_MEM fill:#2d1b69,stroke:#a78bfa,color:#ede9fe
+    style MEMORY_GROUP  fill:#0d0d1a,stroke:#6366f1,color:#c7d2fe
